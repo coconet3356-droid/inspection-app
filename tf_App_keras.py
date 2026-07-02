@@ -204,37 +204,84 @@ if input_method == "파일 업로드":
         st.warning("검사할 이미지 파일을 업로드해주세요.")
 
 elif input_method == "카메라 촬영":
-    st.warning("카메라 접근 권한을 허용해주세요.")
-    camera_file = st.camera_input("카메라로 이미지 촬영")
-    if camera_file:
-        pil_image = Image.open(camera_file).convert("RGB")
-        st.image(pil_image, caption="촬영된 이미지", width=300)
-        st.success("이미지가 성공적으로 촬영되었습니다!")
-    else:
-        st.warning("카메라로 이미지를 촬영해주세요.")
-
-submit = st.button(label="가죽 제품 이미지 검사 시작", type="primary")
-
-if submit:
-    if pil_image is None:
-        st.error("이미지를 먼저 업로드하거나 카메라로 촬영해주세요.")
-    else:
-        st.subheader("검사 결과")
-        with st.spinner("이미지를 분석 중입니다..."):
-            img_array                = preprocess_image(pil_image)
-            heatmap, prob, class_idx = generate_heatmap(cam_model, img_array)
-        label = CLASSES[class_idx]
-        if label == "정상":
-            st.success(f"✅ **정상** (불량 확률: {prob:.1%})\n\n제품 검사 결과 이상이 감지되지 않았습니다.")
+    st.subheader("📱 스마트폰 실시간 스트리밍 검사")
+    st.markdown("""
+    1. 스마트폰과 PC에 **Iriun Webcam** 앱을 실행해 연결합니다.
+    2. 아래 **'실시간 영상 검사 시작'** 체크박스를 누르면 실시간 분석이 시작됩니다.
+    """)
+    
+    # 1. 스트리밍을 제어할 토글/체크박스 스위치
+    run_stream = st.checkbox("🔄 실시간 영상 검사 시작")
+    
+    # 영상과 상태가 실시간으로 업데이트될 플레이스홀더(빈 공간) 확보
+    frame_placeholder = st.empty()
+    status_placeholder = st.empty()
+    
+    if run_stream:
+        # Iriun 가상 웹캠 인덱스 (일반적으로 1 또는 2, 안 되면 0, 3 등으로 변경)
+        # 만약 IP Webcam 어플의 URL 주소를 쓴다면 cam_index 대신 "http://192.168.0.X:8080/video" 입력
+        cam_index = 1 
+        cap = cv2.VideoCapture(cam_index)
+        
+        if not cap.isOpened():
+            st.error("⚠️ 스마트폰 카메라를 연결할 수 없습니다. Iriun 앱이 켜져 있는지, 인덱스 번호가 맞는지 확인하세요.")
         else:
-            st.error(
-                f"⚠️ **불량 감지** (불량 확률: {prob:.1%})\n\n"
-                "아래 히트맵에서 결함이 의심되는 영역(빨간 박스)을 확인하세요."
-            )
-        st.write("**검사 결과 시각화**")
-        visualize_result(pil_image, heatmap, class_idx, prob)
-        st.write("**클래스별 예측 확률**")
-        col1, col2 = st.columns(2)
-        col1.metric("정상", f"{(1 - prob):.1%}")
-        col2.metric("불량", f"{prob:.1%}")
-        st.progress(float(prob), text=f"불량 확률: {prob:.1%}")
+            st.info("▶️ 실시간 검사가 진행 중입니다. 종료하려면 위 체크박스를 해제하세요.")
+            
+            # 체크박스가 켜져 있는 동안 무한 루프 돌며 실시간 추론 및 화면 갱신
+            while run_stream:
+                ret, frame = cap.read()
+                if not ret:
+                    st.warning("프레임을 가져올 수 없습니다.")
+                    break
+                
+                # OpenCV(BGR) -> Streamlit/PIL(RGB) 변환
+                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(img_rgb)
+                
+                # 전처리 및 모델 분석 실행
+                img_array = preprocess_image(pil_image)
+                heatmap, prob, class_idx = generate_heatmap(cam_model, img_array)
+                label = CLASSES[class_idx]
+                
+                # 2. 확보해 둔 공간(st.empty)에 실시간 프레임 갈아끼우기
+                frame_placeholder.image(img_rgb, channels="RGB", caption="실시간 스마트폰 카메라 피드", use_container_width=True)
+                
+                # 3. 실시간 결과 상태 업데이트
+                if label == "정상":
+                    status_placeholder.success(f"✅ **정상** (불량 확률: {prob:.1%}) - 제품 검사 이상 없음")
+                else:
+                    status_placeholder.error(f"⚠️ **불량 감지** [{label}] (불량 확률: {prob:.1%})")
+                
+                # 과부하 방지를 위한 미세한 대기 시간 (약 30 FPS)
+                import time
+                time.sleep(0.03)
+                
+            cap.release() # 루프 탈출 시 웹캠 리소스 해제
+    else:
+        st.write("위의 체크박스를 체크하면 실시간 스트리밍 검사가 시작됩니다.")
+
+
+# ── 4. [파일 업로드] 전용 분석 버튼 영역 ──
+# 카메라 스트리밍은 실시간으로 분석되므로, 기존의 '검사 시작' 버튼은 파일 업로드일 때만 작동하도록 격리합니다.
+if input_method == "파일 업로드":
+    submit = st.button(label="가죽 제품 이미지 검사 시작", type="primary")
+    
+    if submit:
+        if pil_image is None:
+            st.error("이미지를 먼저 업로드해주세요.")
+        else:
+            st.subheader("검사 결과")
+            with st.spinner("이미지를 분석 중입니다..."):
+                img_array = preprocess_image(pil_image)
+                heatmap, prob, class_idx = generate_heatmap(cam_model, img_array)
+            
+            label = CLASSES[class_idx]
+            if label == "정상":
+                st.success(f"✅ **정상** (불량 확률: {prob:.1%})\n\n제품 검사 결과 이상이 감지되지 않았습니다.")
+            else:
+                st.error(f"⚠️ **불량 감지** ({label}) (불량 확률: {prob:.1%})\n\n제품에서 불량 패턴이 분석되었습니다.")
+            
+            # 히트맵 시각화 플롯 출력
+            fig = display_activation_map(pil_image, heatmap, prob, label)
+            st.pyplot(fig)
